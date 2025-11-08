@@ -1,0 +1,8 @@
+# Requirements per il notebook di analisi (compatibili con Python 3.13)
+pandas>=2.2
+matplotlib>=3.9
+psycopg2-binary>=2.9
+jupyter>=1.0
+notebook>=7.3
+seaborn>=0.13
+numpy>=2.1

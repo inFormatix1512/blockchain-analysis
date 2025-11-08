@@ -1,0 +1,65 @@
+version: '3.8'
+services:
+  bitcoind:
+    image: ruimarinho/bitcoin-core:latest
+    container_name: bitcoind
+    volumes:
+      - ./bitcoin-data:/root/.bitcoin
+    ports:
+      - "8332:8332"
+      - "8333:8333"
+    environment:
+      - BITCOIN_RPCUSER=bitcoin
+      - BITCOIN_RPCPASSWORD=bitcoin123
+    command: >
+      -printtoconsole
+      -server=1
+      -rpcallowip=0.0.0.0/0
+      -rpcbind=0.0.0.0
+      -rpcuser=bitcoin
+      -rpcpassword=bitcoin123
+      -prune=10000
+      -disablewallet=0
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-rpcuser=bitcoin", "-rpcpassword=bitcoin123", "getblockchaininfo"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: blockchain
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ingest:
+    build: ./ingest
+    container_name: ingest
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./ingest:/app
+    environment:
+      - RPC_USER=bitcoin
+      - RPC_PASSWORD=bitcoin123
+      - RPC_HOST=bitcoind
+      - RPC_PORT=8332
+      - PGHOST=postgres
+      - PGUSER=postgres
+      - PGPASSWORD=postgres
+      - PGDATABASE=blockchain
+    command: ["python", "run_ingest.py"]

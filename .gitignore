@@ -1,0 +1,94 @@
+# ============================================
+# BLOCKCHAIN DATA (troppo grande per GitHub)
+# ============================================
+bitcoin-data/
+pgdata/
+
+# ============================================
+# DOCUMENTAZIONE TESI (non per repository)
+# ============================================
+docs/
+*.pdf
+
+# ============================================
+# PYTHON
+# ============================================
+# Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ============================================
+# JUPYTER NOTEBOOK
+# ============================================
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+.ipynb_checkpoints/
+
+# ============================================
+# ENVIRONMENT VARIABLES
+# ============================================
+.env
+.env.local
+.env.*.local
+
+# ============================================
+# IDE / EDITOR
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# ============================================
+# OS FILES
+# ============================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ============================================
+# LOGS
+# ============================================
+*.log
+logs/
+
+# ============================================
+# DATABASE BACKUPS
+# ============================================
+*.sql.gz
+*.dump
+*.sqlite
+*.db
