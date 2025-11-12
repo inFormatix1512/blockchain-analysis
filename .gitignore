@@ -11,6 +11,12 @@ docs/
 *.pdf
 
 # ============================================
+# RISULTATI SPERIMENTALI (solo output generati)
+# ============================================
+analysis/results/
+analysis/sync_estimate.py
+
+# ============================================
 # PYTHON
 # ============================================
 # Cache
