@@ -15,6 +15,7 @@ docs/
 # ============================================
 analysis/results/
 analysis/sync_estimate.py
+analysis/generate_thesis_report.py
 
 # ============================================
 # PYTHON
@@ -98,3 +99,7 @@ logs/
 *.dump
 *.sqlite
 *.db
+
+deployment/
+scripts/monitor_disk.sh
+analysis/run_thesis_cases.py
