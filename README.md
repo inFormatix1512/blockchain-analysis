@@ -33,37 +33,38 @@ Bitcoin Core (pruned) → Ingest Service (Python) → PostgreSQL → Analysis/ML
 
 The system uses **Bitcoin Core in pruned mode** to minimize disk usage while maintaining full blockchain validation:
 
-- **Prune size**: 50GB (configurable via `prune=50000` in `bitcoin.conf`)
+- **Prune size**: 140GB (configurable via `prune=140000` in `bitcoin.conf`)
 - **Mode**: Full node validation with automatic old block pruning
-- **Retention**: Keeps last ~50,000 blocks available for queries
+- **Retention**: Keeps last ~140,000 MB of blocks (~2.5 years of blockchain data)
 - **Benefits**: 
   - Full security (validates entire blockchain)
-  - Minimal storage (~50GB vs ~600GB for full archival node)
-  - Suitable for resource-constrained environments
+  - Balanced storage (140GB vs ~600GB for full archival node)
+  - Sufficient for multi-year historical analysis
 - **Trade-off**: Cannot query arbitrary historical blocks older than retention window
 
 ### Auto-Stop Ingest Mechanism
 
 The ingest service features **automatic completion** when reaching data collection targets:
 
-- **Target height**: Configurable via `INGEST_END_HEIGHT` environment variable (default: 150,000 blocks)
+- **Target height**: Configurable via `INGEST_END_HEIGHT` environment variable (default: 600,188 blocks)
 - **Auto-stop**: Service monitors database progress and gracefully exits when target is reached
 - **Progress tracking**: Real-time logging with percentage completion
 - **Example log output**:
   ```
-  📊 Progresso: 75000/150000 (50.00%)
-  🎯 OBIETTIVO RAGGIUNTO! Blocco 150000/150000
+  📊 Progresso: 450000/600188 (74.98%)
+  🎯 OBIETTIVO RAGGIUNTO! Blocco 600188/600188
   ✅ Ingestione completata. Container si arresta.
   ```
-- **Use case**: Collect specific historical datasets (e.g., early Bitcoin era 2009-2011) without manual intervention
+- **Use case**: Collect specific historical datasets (e.g., May 2017 - October 2019) without manual intervention
 
 ## Quick Start
 
 ### Prerequisites
 
 - Docker & Docker Compose
-- 50GB+ disk space (for pruned node with 50GB prune size)
+- 160GB+ disk space (140GB pruned blockchain + 20GB database)
 - Python 3.9+ (for analysis notebooks)
+- 8GB+ RAM recommended
 - Stable internet connection for blockchain synchronization
 
 ### 1. Start the System
@@ -185,11 +186,13 @@ python scripts/tests/test_ml.py
 Edit `config/bitcoin.conf` to customize Bitcoin Core:
 
 ```conf
-prune=50000        # Keep last 50GB of blocks (maintains ~50,000 blocks)
-rpcuser=bitcoinrpc
-rpcpassword=secure_rpc_password_2024
+prune=140000       # Keep last 140GB of blocks (~2.5 years of data)
+rpcuser=bitcoin
+rpcpassword=bitcoin123
 server=1           # Enable RPC server
 txindex=0          # Disabled (not needed in pruned mode)
+rpcbind=0.0.0.0    # Bind to all interfaces (Docker networking)
+rpcallowip=172.18.0.0/16  # Allow Docker subnet
 ```
 
 ### Ingest Configuration
@@ -198,44 +201,48 @@ Edit `.env` file to configure data collection parameters:
 
 ```env
 # Bitcoin RPC
-BITCOIN_RPC_USER=bitcoinrpc
-BITCOIN_RPC_PASSWORD=secure_rpc_password_2024
-BITCOIN_RPC_HOST=bitcoind
-BITCOIN_RPC_PORT=8332
+RPC_USER=bitcoin
+RPC_PASSWORD=bitcoin123
+RPC_HOST=bitcoind
+RPC_PORT=8332
 
 # Database
-POSTGRES_USER=blockchain_user
-POSTGRES_PASSWORD=blockchain_secure_password_2024
-POSTGRES_DB=blockchain_analysis
+PGHOST=postgres
+PGUSER=postgres
+PGPASSWORD=postgres
+PGDATABASE=blockchain
 
 # Ingest settings
-INGEST_END_HEIGHT=150000          # Auto-stop at this block height
-MAX_BLOCKS_PER_RUN=500            # Blocks processed per cycle
-BLOCK_INGEST_INTERVAL=60          # Seconds between ingest cycles
-MEMPOOL_SNAPSHOT_INTERVAL=300     # Seconds between mempool snapshots
+INGEST_END_HEIGHT=600188          # Auto-stop at this block height (Oct 2019)
+MAX_BLOCKS_PER_RUN=1000           # Blocks processed per cycle (high throughput)
+BLOCK_INGEST_INTERVAL=30          # Seconds between ingest cycles
+MEMPOOL_SNAPSHOT_INTERVAL=60      # Seconds between mempool snapshots
 ```
 
 ### Database Configuration
 
 Default credentials (change for production):
-- **User**: `blockchain_user`
-- **Password**: `blockchain_secure_password_2024`
-- **Database**: `blockchain_analysis`
+- **User**: `postgres`
+- **Password**: `postgres`
+- **Database**: `blockchain`
+
+**Security Note**: These are development defaults. For production deployments, use strong passwords and restrict network access (bind PostgreSQL to 127.0.0.1 only).
 
 ## Performance
 
 - **Query Latency**: <10ms (99th percentile)
-- **Throughput**: ~500 blocks/hour during sync, ~50 transactions/minute sustained
+- **Throughput**: ~1,400 blocks/hour during ingest, processing ~2,500 transactions/minute
 - **Resource Usage**: 
-  - CPU: ~15-30% (during sync), ~5% (idle)
-  - RAM: ~1.5GB (bitcoind), ~500MB (postgres), ~256MB (ingest)
+  - CPU: ~150% bitcoind (verification), ~35% python ingest, ~40-80% postgres (under load)
+  - RAM: ~1.6GB (bitcoind), ~150MB (postgres), ~80MB (ingest)
 - **Storage**: 
-  - Bitcoin data: ~50GB (pruned mode)
-  - Database: ~1GB per 100k transactions
-  - Total recommended: 80GB disk minimum
+  - Bitcoin data: ~140GB (pruned mode with 140GB retention)
+  - Database: ~800MB per 2M transactions (without raw JSONB)
+  - Total recommended: 160GB disk minimum
 - **Sync Time**: 
-  - First 150k blocks: 48-72 hours (depends on network speed)
-  - Ingest rate: ~2,000-3,000 blocks/hour during peak
+  - Full sync to block 657k: ~24 hours (depends on network speed)
+  - Ingest rate: ~1,400 blocks/hour (1000 blocks per 30s cycle)
+  - Complete ingest (552k-600k): ~33 hours for 47k blocks
 
 ## Use Cases
 
@@ -256,8 +263,8 @@ Default credentials (change for production):
 
 ## Limitations
 
-- **Pruned node constraints**: Cannot query blocks older than retention window (~50,000 blocks)
-- **Historical data collection**: Requires full sync to target height before ingest can process blocks
+- **Pruned node constraints**: Cannot query blocks older than retention window (~140GB / ~47k blocks)
+- **Historical data collection**: Requires full sync beyond target height before ingest can process blocks
 - **Simplified heuristics**: Production systems use more sophisticated algorithms
 - **ML training data**: Models lack comprehensive labeled datasets for validation
 - **Resource requirements**: Requires stable infrastructure for multi-day synchronization
@@ -265,14 +272,17 @@ Default credentials (change for production):
 
 ### Important Note on Pruned Mode
 
-When using pruned mode with `prune=50000`:
+When using pruned mode with `prune=140000`:
 - Bitcoin Core downloads and validates **entire blockchain** sequentially
-- Only the **last 50GB** (~50,000 most recent blocks) are retained on disk
+- Only the **last 140GB** of blocks are retained on disk
 - Older blocks are automatically deleted after validation
 - **Ingest service** can only process blocks currently available in retention window
-- To collect blocks 0-150,000: Bitcoin must sync past block ~200,000 (so blocks 150k-200k are in the 50k window)
+- Current dataset: blocks 552,905-600,188 (May 2018 - Oct 2019, ~47k blocks)
+- To collect blocks up to height N: Bitcoin must sync significantly past N (so target range falls within retention window)
 
 **Strategy**: Configure `INGEST_END_HEIGHT` based on your pruned retention size and target dataset.
+
+**Disk Space Optimization**: If running low on disk space, you can disable the `raw` JSONB column in `block_ingest.py` (comment out the raw column insertion). This reduces database size by ~70% but disables fee calculation for new blocks. Fee data will still be available for blocks ingested before the optimization.
 
 ## Extending the System
 

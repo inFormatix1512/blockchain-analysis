@@ -49,7 +49,8 @@ def get_max_block_in_db():
 
 def main():
     logger.info("Avvio del servizio di ingestione dati...")
-    logger.info(f"🎯 Target: stop automatico a blocco {INGEST_END_HEIGHT}")
+    logger.info(f"Target: stop automatico a blocco {INGEST_END_HEIGHT}")
+    logger.info("Il nodo potrebbe essere in sincronizzazione iniziale, attendere...")
 
     last_mempool_snapshot = 0
     last_block_ingest = 0

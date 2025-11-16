@@ -4,7 +4,7 @@ services:
     image: ruimarinho/bitcoin-core:latest
     container_name: bitcoind
     volumes:
-      - ./bitcoin-data:/root/.bitcoin
+      - ./bitcoin-data:/home/bitcoin/.bitcoin
     ports:
       - "8332:8332"
       - "8333:8333"
@@ -13,13 +13,8 @@ services:
       - BITCOIN_RPCPASSWORD=bitcoin123
     command: >
       -printtoconsole
-      -server=1
-      -rpcallowip=0.0.0.0/0
-      -rpcbind=0.0.0.0
-      -rpcuser=bitcoin
-      -rpcpassword=bitcoin123
-      -prune=10000
-      -disablewallet=0
+      -daemon=0
+      -conf=/home/bitcoin/.bitcoin/bitcoin.conf
     healthcheck:
       test: ["CMD", "bitcoin-cli", "-rpcuser=bitcoin", "-rpcpassword=bitcoin123", "getblockchaininfo"]
       interval: 30s
@@ -62,4 +57,7 @@ services:
       - PGUSER=postgres
       - PGPASSWORD=postgres
       - PGDATABASE=blockchain
+      - MAX_BLOCKS_PER_RUN=1000
+      - INGEST_END_HEIGHT=600188
+      - BLOCK_INGEST_INTERVAL=30
     command: ["python", "run_ingest.py"]

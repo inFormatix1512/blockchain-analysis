@@ -62,6 +62,16 @@ def rpc_call(method, params=None, max_retries=MAX_RETRIES, retry_delay=RETRY_DEL
     raise RuntimeError(f"RPC call {method} failed after {max_retries} attempts")
 
 
+def is_node_syncing():
+    """Check if the Bitcoin node is still in initial block download."""
+    try:
+        blockchain_info = rpc_call('getblockchaininfo')
+        return blockchain_info.get('initialblockdownload', True)
+    except Exception as exc:
+        logger.warning("Failed to check IBD status: %s", exc)
+        return True
+
+
 def get_last_processed_height(conn):
     """Return the latest block height stored in the database."""
     try:
@@ -131,10 +141,16 @@ def calculate_tx_fee(tx, conn):
                 if not row:
                     return None
 
-                try:
-                    prev_tx = json.loads(row[0])
-                except json.JSONDecodeError:
-                    logger.debug("Unable to decode stored raw transaction %s", prev_txid)
+                # Handle both dict (JSONB from Postgres) and string formats
+                prev_tx = row[0]
+                if isinstance(prev_tx, str):
+                    try:
+                        prev_tx = json.loads(prev_tx)
+                    except json.JSONDecodeError:
+                        logger.debug("Unable to decode stored raw transaction %s", prev_txid)
+                        return None
+                elif not isinstance(prev_tx, dict):
+                    logger.debug("Unexpected type for raw transaction %s: %s", prev_txid, type(prev_tx))
                     return None
 
                 prev_vouts = prev_tx.get('vout', [])
@@ -166,10 +182,19 @@ def ingest_new_blocks():
 
     try:
         last_height = get_last_processed_height(conn)
-        current_height = rpc_call('getblockcount')
+        
+        # Get blockchain info to determine available block range
+        blockchain_info = rpc_call('getblockchaininfo')
+        current_height = blockchain_info.get('blocks', 0)
+        prune_height = blockchain_info.get('pruneheight', 0)
+        
+        # Start from pruneheight if we haven't processed anything yet
+        if last_height < prune_height:
+            logger.info("Last processed block %s is below prune height %s, starting from prune height", last_height, prune_height)
+            last_height = prune_height
 
         if current_height <= last_height:
-            logger.info("No new blocks to process (last=%s)", last_height)
+            logger.info("No new blocks to process (last=%s, current=%s)", last_height, current_height)
             return
 
         blocks_to_process = min(MAX_BLOCKS_PER_RUN, current_height - last_height)
@@ -182,6 +207,12 @@ def ingest_new_blocks():
                 try:
                     block_hash = rpc_call('getblockhash', [height])
                     block = rpc_call('getblock', [block_hash, 2])
+                    
+                    # Check if block data is pruned
+                    if block.get('tx') is None:
+                        logger.warning("Block %s data is pruned, skipping", height)
+                        continue
+                    
                     txs = block.get('tx', [])
                     logger.info("Processing block %s with %s transactions", height, len(txs))
 
