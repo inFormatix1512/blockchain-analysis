@@ -119,27 +119,6 @@ pip install -r requirements-analysis.txt
 jupyter notebook analysis/analysis.ipynb
 ```
 
-## Project Structure
-
-```
-├── docker-compose.yml          # Container orchestration
-├── config/
-│   ├── bitcoin.conf            # Bitcoin Core configuration
-│   └── create_tables.sql       # Database schema
-├── ingest/
-│   ├── block_ingest.py         # Block processing logic
-│   ├── mempool_snapshot.py     # Mempool monitoring
-│   └── run_ingest.py           # Main ingestion loop
-├── ml/
-│   ├── train_models.py         # ML model training
-│   └── predict.py              # Inference scripts
-├── analysis/
-│   ├── analysis.ipynb          # Data exploration notebook
-│   └── ml_analysis.ipynb       # ML analysis notebook
-└── scripts/
-    └── tests/                  # System tests
-```
-
 ## Database Schema
 
 ### Tables

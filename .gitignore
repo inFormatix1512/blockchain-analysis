@@ -14,8 +14,7 @@ docs/
 # RISULTATI SPERIMENTALI (solo output generati)
 # ============================================
 analysis/results/
-analysis/sync_estimate.py
-analysis/generate_thesis_report.py
+analysis/generate_figures.py
 
 # ============================================
 # PYTHON
