@@ -1,91 +1,89 @@
 #!/usr/bin/env python3
-"""Capture periodic Bitcoin mempool snapshots."""
+"""
+Bitcoin mempool snapshot capture module.
+
+Periodically captures and stores mempool state for analysis
+of fee market dynamics and transaction propagation.
+"""
 
 import json
 import logging
-import os
-import time
-from datetime import datetime
+import sys
+from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Dict, Tuple
 
-import psycopg2
-import requests
+# Add parent directory to path for imports
+sys.path.insert(0, str(__file__).rsplit('\\', 2)[0].rsplit('/', 2)[0])
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+from common import Config, DatabaseManager, BitcoinRPC
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-RPC_USER = os.environ.get('RPC_USER', 'yourrpcuser')
-RPC_PASSWORD = os.environ.get('RPC_PASSWORD', 'yourrpcpassword')
-RPC_HOST = os.environ.get('RPC_HOST', 'localhost')
-RPC_PORT = os.environ.get('RPC_PORT', '8332')
-RPC_URL = f"http://{RPC_HOST}:{RPC_PORT}"
 
-PGHOST = os.environ.get('PGHOST', 'localhost')
-PGUSER = os.environ.get('PGUSER', 'postgres')
-PGPASSWORD = os.environ.get('PGPASSWORD', 'postgres')
-PGDATABASE = os.environ.get('PGDATABASE', 'blockchain')
-
-MAX_RETRIES = 3
-RETRY_DELAY = 5  # seconds
-
-
-def rpc_call(method, params=None, max_retries=MAX_RETRIES, retry_delay=RETRY_DELAY):
-    """Call the Bitcoin RPC endpoint with retry logic."""
-    payload = {
-        'jsonrpc': '2.0',
-        'id': 'mempool',
-        'method': method,
-        'params': params or [],
-    }
-
-    for attempt in range(max_retries):
-        try:
-            response = requests.post(
-                RPC_URL,
-                auth=(RPC_USER, RPC_PASSWORD),
-                json=payload,
-                timeout=30,
-            )
-            response.raise_for_status()
-            result = response.json()
-            if result.get('error') is not None:
-                raise RuntimeError(f"RPC error: {result['error']}")
-            return result['result']
-        except (requests.exceptions.RequestException, RuntimeError) as exc:
-            logger.warning("RPC call %s failed (attempt %s/%s): %s", method, attempt + 1, max_retries, exc)
-            if attempt == max_retries - 1:
-                raise
-            time.sleep(retry_delay * (2 ** attempt))
-
-    raise RuntimeError(f"RPC call {method} failed after {max_retries} attempts")
-
-
-def take_mempool_snapshot():
-    """Fetch mempool details and store them in the database."""
-    conn = None
-    try:
-        logger.info("Fetching mempool information")
-        mempool_info = rpc_call('getmempoolinfo')
-        mempool_raw = rpc_call('getrawmempool', [True])
-
-        total_tx = mempool_info.get('size', 0)
-        total_size = mempool_info.get('bytes', 0)
+class MempoolSnapshot:
+    """
+    Handles Bitcoin mempool snapshot capture and storage.
+    
+    Captures mempool state including transaction count, size,
+    and total fees for historical analysis.
+    """
+    
+    SATS_PER_BTC = Decimal('100000000')
+    
+    def __init__(self):
+        """Initialize with configuration."""
+        self._config = Config()
+        self._rpc = BitcoinRPC()
+    
+    def _calculate_total_fee(self, mempool_raw: Dict) -> int:
+        """
+        Calculate total fees in the mempool.
+        
+        Args:
+            mempool_raw: Raw mempool data from getrawmempool.
+            
+        Returns:
+            Total fees in satoshis.
+        """
         total_fee = sum(
-            Decimal(str(tx_data.get('fee', 0))) * Decimal('1e8')
+            Decimal(str(tx_data.get('fee', 0))) * self.SATS_PER_BTC
             for tx_data in mempool_raw.values()
             if isinstance(tx_data, dict) and tx_data.get('fee') is not None
         )
-        total_fee_int = int(total_fee)
-
+        return int(total_fee)
+    
+    def capture(self) -> Tuple[int, int, int]:
+        """
+        Capture current mempool state and store in database.
+        
+        Returns:
+            Tuple of (total_tx, total_size, total_fee_satoshis).
+            
+        Raises:
+            Exception: On capture or storage failure.
+        """
+        logger.info("Fetching mempool information")
+        
+        # Get mempool data from Bitcoin Core
+        mempool_info = self._rpc.get_mempool_info()
+        mempool_raw = self._rpc.get_raw_mempool(verbose=True)
+        
+        total_tx = mempool_info.get('size', 0)
+        total_size = mempool_info.get('bytes', 0)
+        total_fee = self._calculate_total_fee(mempool_raw)
+        
         logger.info(
-            "Mempool snapshot: %s transactions, %s bytes, %s satoshi in fees",
-            total_tx,
-            total_size,
-            total_fee_int,
+            "Mempool snapshot: %d transactions, %d bytes, %d satoshi in fees",
+            total_tx, total_size, total_fee
         )
-
-        conn = psycopg2.connect(host=PGHOST, user=PGUSER, password=PGPASSWORD, dbname=PGDATABASE)
-        with conn:
+        
+        # Store snapshot
+        with DatabaseManager() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -93,23 +91,42 @@ def take_mempool_snapshot():
                     VALUES (%s, %s, %s, %s, %s)
                     """,
                     (
-                        datetime.utcnow(),
+                        datetime.now(timezone.utc),
                         total_tx,
                         total_size,
-                        total_fee_int,
+                        total_fee,
                         json.dumps(mempool_raw, separators=(',', ':')),
                     ),
                 )
-
+            conn.commit()
+        
         logger.info("Mempool snapshot saved successfully")
-    except Exception as exc:
-        logger.error("Error taking mempool snapshot: %s", exc)
-        raise
+        
+        return total_tx, total_size, total_fee
+    
+    def close(self) -> None:
+        """Close RPC connection."""
+        self._rpc.close()
+
+
+def take_mempool_snapshot() -> Tuple[int, int, int]:
+    """
+    Entry point for mempool snapshot capture.
+    
+    Returns:
+        Tuple of (total_tx, total_size, total_fee_satoshis).
+    """
+    snapshot = MempoolSnapshot()
+    try:
+        return snapshot.capture()
     finally:
-        if conn is not None:
-            conn.close()
-            logger.info("Database connection closed")
+        snapshot.close()
 
 
 if __name__ == '__main__':
-    take_mempool_snapshot()
+    try:
+        tx_count, size, fee = take_mempool_snapshot()
+        print(f"Captured: {tx_count} txs, {size} bytes, {fee} sat fees")
+    except Exception as exc:
+        logger.error("Error taking mempool snapshot: %s", exc)
+        sys.exit(1)

@@ -61,8 +61,8 @@ def main():
         # Controlla se abbiamo raggiunto il target
         max_block = get_max_block_in_db()
         if max_block >= INGEST_END_HEIGHT:
-            logger.info(f"🎯 OBIETTIVO RAGGIUNTO! Blocco {max_block}/{INGEST_END_HEIGHT}")
-            logger.info("✅ Ingestione completata. Container si arresta.")
+            logger.info(f"OBIETTIVO RAGGIUNTO: Blocco {max_block}/{INGEST_END_HEIGHT}")
+            logger.info("Ingestione completata. Arresto container.")
             sys.exit(0)
 
         # Snapshot del mempool
@@ -81,7 +81,7 @@ def main():
                 last_block_ingest = current_time
                 max_block = get_max_block_in_db()
                 progress = (max_block * 100.0 / INGEST_END_HEIGHT) if INGEST_END_HEIGHT > 0 else 0
-                logger.info(f"📊 Progresso: {max_block}/{INGEST_END_HEIGHT} ({progress:.2f}%)")
+                logger.info(f"Progresso: {max_block}/{INGEST_END_HEIGHT} blocchi ({progress:.2f}%)")
             except Exception as e:
                 logger.error(f"Errore durante ingestione blocchi: {e}")
 
