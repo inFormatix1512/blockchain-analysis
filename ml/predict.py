@@ -22,13 +22,13 @@ sys.path.insert(0, _parent_dir)
 sys.path.insert(0, _current_dir)
 
 from common import get_db_connection
-from train_models import (
+from ml.models import (
     AnomalyDetector,
     CoinJoinDetector,
     FeeratePredictor,
     TransactionClusterer,
-    engineer_features,
 )
+from ml.feature_engineering import engineer_features
 
 logging.basicConfig(
     level=logging.INFO,
@@ -104,7 +104,14 @@ class TransactionAnalyzer:
             b.vsize,
             b.weight,
             b.fee,
-            b.feerate,
+            COALESCE(
+                b.feerate,
+                CASE 
+                    WHEN b.fee IS NOT NULL AND b.vsize IS NOT NULL AND b.vsize > 0
+                        THEN (b.fee::numeric / b.vsize)
+                    ELSE NULL
+                END
+            ) as feerate,
             b.inputs_count,
             b.outputs_count,
             h.is_rbf,
@@ -113,9 +120,6 @@ class TransactionAnalyzer:
             h.likely_change_index
         FROM tx_basic b
         JOIN tx_heuristics h ON b.txid = h.txid
-        WHERE b.fee IS NOT NULL 
-            AND b.feerate IS NOT NULL
-            AND b.feerate > 0
         ORDER BY b.block_height DESC
         LIMIT {limit}
         """

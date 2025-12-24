@@ -8,6 +8,7 @@ with computed heuristics to PostgreSQL.
 
 import json
 import logging
+import os
 import sys
 import time
 from collections import Counter
@@ -16,6 +17,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
+from psycopg2.extras import execute_values
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(__file__).rsplit('\\', 2)[0].rsplit('/', 2)[0])
@@ -39,12 +41,124 @@ class BlockIngestor:
     """
     
     SATS_PER_BTC = Decimal('100000000')
+    START_BLOCK_HEIGHT = 600000  # Approx Oct 2019
     
     def __init__(self):
         """Initialize the block ingestor with configuration."""
         self._config = Config()
         self._rpc = BitcoinRPC()
-    
+        self.MAX_BLOCKS_PER_RUN = int(os.getenv('MAX_BLOCKS_PER_RUN', 0))
+        self.WORKER_ID = os.getenv('WORKER_ID', f"worker-{os.getpid()}")
+
+    def ensure_schema(self, conn):
+        """Ensure the coordination table exists."""
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS ingest_status (
+                        block_height INTEGER PRIMARY KEY,
+                        worker_id VARCHAR(50),
+                        status VARCHAR(20) DEFAULT 'processing',
+                        started_at TIMESTAMPTZ DEFAULT NOW(),
+                        completed_at TIMESTAMPTZ,
+                        error_msg TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_ingest_status_status ON ingest_status(status);
+                """)
+            conn.commit()
+        except psycopg2.Error as exc:
+            logger.error("Error creating schema: %s", exc)
+            conn.rollback()
+
+    def claim_next_block(self, conn) -> Optional[int]:
+        """
+        Atomically claims the next available block for processing.
+        """
+        try:
+            while True:
+                with conn.cursor() as cur:
+                    # Check if table is empty to seed it
+                    cur.execute("SELECT COUNT(*) FROM ingest_status")
+                    count = cur.fetchone()[0]
+                    
+                    next_height = None
+                    
+                    if count == 0:
+                        # Seed with START_BLOCK_HEIGHT
+                        next_height = self.START_BLOCK_HEIGHT
+                    else:
+                        # Find the first gap or the next block after max
+                        cur.execute("""
+                            SELECT MAX(block_height) + 1 FROM ingest_status
+                        """)
+                        row = cur.fetchone()
+                        if row and row[0]:
+                            next_height = row[0]
+                        else:
+                            next_height = self.START_BLOCK_HEIGHT
+
+                    # Check against blockchain tip
+                    blockchain_info = self._rpc.get_blockchain_info()
+                    chain_height = blockchain_info.get('blocks', 0)
+                    
+                    if next_height > chain_height:
+                        return None
+
+                    # Fast Forward: Check if already in tx_basic (Legacy data)
+                    cur.execute("SELECT 1 FROM tx_basic WHERE block_height = %s LIMIT 1", (next_height,))
+                    if cur.fetchone():
+                        logger.info(f"Block {next_height} already in DB. Marking as completed.")
+                        cur.execute("""
+                            INSERT INTO ingest_status (block_height, worker_id, status, completed_at)
+                            VALUES (%s, 'legacy', 'completed', NOW())
+                            ON CONFLICT (block_height) DO UPDATE SET status='completed'
+                        """, (next_height,))
+                        conn.commit()
+                        continue # Loop to find next
+
+                    # Try to claim
+                    cur.execute("""
+                        INSERT INTO ingest_status (block_height, worker_id, status)
+                        VALUES (%s, %s, 'processing')
+                        ON CONFLICT (block_height) DO NOTHING
+                        RETURNING block_height
+                    """, (next_height, self.WORKER_ID))
+                    
+                    row = cur.fetchone()
+                    if row:
+                        conn.commit()
+                        logger.info(f"Worker {self.WORKER_ID} claimed block {next_height}")
+                        return row[0]
+                    else:
+                        # Conflict, someone else took it
+                        conn.rollback()
+                        # Loop to try next
+                        continue
+                        
+        except psycopg2.Error as exc:
+            logger.error("Error claiming block: %s", exc)
+            conn.rollback()
+            return None
+        except RPCError as exc:
+            logger.error("RPC Error checking tip: %s", exc)
+            return None
+
+    def update_block_status(self, conn, height: int, status: str, error: str = None):
+        """Update the status of a block in the coordination table."""
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE ingest_status 
+                    SET status = %s, 
+                        completed_at = CASE WHEN %s = 'completed' THEN NOW() ELSE NULL END,
+                        error_msg = %s
+                    WHERE block_height = %s
+                """, (status, status, error, height))
+            conn.commit()
+        except psycopg2.Error as exc:
+            logger.error("Error updating block status: %s", exc)
+            conn.rollback()
+
     def get_last_processed_height(self, conn) -> int:
         """
         Get the latest block height stored in the database.
@@ -126,74 +240,6 @@ class BlockIngestor:
         
         return heuristics
     
-    def calculate_tx_fee(self, tx: Dict, conn) -> Optional[int]:
-        """
-        Calculate transaction fee in satoshis.
-        
-        Computes fee by summing inputs and subtracting outputs.
-        Requires previous transactions to be in the database.
-        
-        Args:
-            tx: Transaction data dictionary.
-            conn: Database connection.
-            
-        Returns:
-            Fee in satoshis, 0 for coinbase, or None if cannot be determined.
-        """
-        vin = tx.get('vin', [])
-        
-        # Coinbase transactions have no fee
-        if any('coinbase' in inp for inp in vin):
-            return 0
-        
-        # Sum outputs
-        output_total = sum(
-            Decimal(str(out.get('value', 0))) 
-            for out in tx.get('vout', [])
-        ) * self.SATS_PER_BTC
-        
-        # Sum inputs by looking up previous transactions
-        input_total = Decimal('0')
-        
-        try:
-            with conn.cursor() as cur:
-                for inp in vin:
-                    prev_txid = inp.get('txid')
-                    vout_index = inp.get('vout')
-                    
-                    if prev_txid is None or vout_index is None:
-                        return None
-                    
-                    cur.execute("SELECT raw FROM tx_basic WHERE txid = %s", (prev_txid,))
-                    row = cur.fetchone()
-                    
-                    if not row:
-                        return None
-                    
-                    prev_tx = self._parse_raw_tx(row[0], prev_txid)
-                    if prev_tx is None:
-                        return None
-                    
-                    prev_vouts = prev_tx.get('vout', [])
-                    if vout_index >= len(prev_vouts):
-                        return None
-                    
-                    input_total += Decimal(str(prev_vouts[vout_index].get('value', 0))) * self.SATS_PER_BTC
-                    
-        except psycopg2.Error as exc:
-            logger.warning(
-                "Database error computing fee for %s: %s",
-                tx.get('txid', 'unknown'), exc
-            )
-            return None
-        
-        fee = input_total - output_total
-        
-        if fee < 0:
-            logger.debug("Negative fee computed for %s, skipping", tx.get('txid', 'unknown'))
-            return None
-        
-        return int(fee)
     
     def _parse_raw_tx(self, raw_data: Any, txid: str) -> Optional[Dict]:
         """
@@ -228,89 +274,64 @@ class BlockIngestor:
             script_types[script_type] = script_types.get(script_type, 0) + 1
         return script_types
     
-    def process_transaction(
-        self, 
-        tx: Dict, 
-        height: int, 
-        block_time: datetime,
-        cur,
-        conn
-    ) -> bool:
-        """
-        Process and store a single transaction.
-        
-        Args:
-            tx: Transaction data.
-            height: Block height.
-            block_time: Block timestamp.
-            cur: Database cursor.
-            conn: Database connection (for fee calculation).
-            
-        Returns:
-            True if transaction was processed, False if skipped.
-        """
-        txid = tx.get('txid')
-        if not txid:
-            return False
-        
-        # Skip if already processed
-        cur.execute("SELECT 1 FROM tx_basic WHERE txid = %s", (txid,))
-        if cur.fetchone():
-            return False
-        
-        # Extract transaction metrics
-        size = tx.get('size', 0)
-        vsize = tx.get('vsize', size)
-        weight = tx.get('weight', size * 4)
-        
-        fee = self.calculate_tx_fee(tx, conn)
-        feerate = (fee / vsize) if (fee is not None and vsize > 0) else None
-        
-        inputs_count = len(tx.get('vin', []))
-        outputs_count = len(tx.get('vout', []))
-        script_types = self._extract_script_types(tx)
-        
-        # Insert transaction basic data
-        cur.execute(
-            """
-            INSERT INTO tx_basic (
-                txid, block_height, ts, size, vsize, weight,
-                fee, feerate, inputs_count, outputs_count, script_types, raw
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                txid, height, block_time, size, vsize, weight,
-                int(fee) if fee is not None else None,
-                feerate, inputs_count, outputs_count,
-                json.dumps(script_types), json.dumps(tx, separators=(',', ':')),
-            ),
-        )
-        
-        # Insert heuristics
-        heuristics = self.calculate_heuristics(tx)
-        cur.execute(
-            """
-            INSERT INTO tx_heuristics (
-                txid, is_rbf, coinjoin_score, equal_output, likely_change_index, notes
-            )
-            VALUES (%s, %s, %s, %s, %s, %s)
-            """,
-            (
-                txid,
-                heuristics['is_rbf'],
-                heuristics['coinjoin_score'],
-                heuristics['equal_output'],
-                heuristics['likely_change_index'],
-                '',
-            ),
-        )
-        
-        return True
     
+    def _batch_get_prev_txs(self, txs: List[Dict], cur) -> Dict[str, Dict]:
+        """Fetch all previous transactions needed for fee calculation in a single batch."""
+        needed_txids = set()
+        for tx in txs:
+            if any('coinbase' in inp for inp in tx.get('vin', [])):
+                continue
+            for inp in tx.get('vin', []):
+                if 'txid' in inp:
+                    needed_txids.add(inp['txid'])
+        
+        if not needed_txids:
+            return {}
+            
+        prev_tx_map = {}
+        needed_list = list(needed_txids)
+        batch_size = 1000
+        
+        for i in range(0, len(needed_list), batch_size):
+            batch = needed_list[i:i + batch_size]
+            cur.execute("SELECT txid, raw FROM tx_basic WHERE txid = ANY(%s)", (batch,))
+            for row in cur.fetchall():
+                txid, raw = row
+                parsed = self._parse_raw_tx(raw, txid)
+                if parsed:
+                    prev_tx_map[txid] = parsed
+        return prev_tx_map
+
+    def _calculate_fee_from_map(self, tx: Dict, prev_tx_map: Dict[str, Dict]) -> Optional[int]:
+        """Calculate fee using in-memory map of previous transactions."""
+        vin = tx.get('vin', [])
+        if any('coinbase' in inp for inp in vin):
+            return 0
+            
+        output_total = sum(Decimal(str(out.get('value', 0))) for out in tx.get('vout', [])) * self.SATS_PER_BTC
+        input_total = Decimal('0')
+        
+        for inp in vin:
+            prev_txid = inp.get('txid')
+            vout_index = inp.get('vout')
+            
+            if prev_txid not in prev_tx_map:
+                return None
+                
+            prev_tx = prev_tx_map[prev_txid]
+            prev_vouts = prev_tx.get('vout', [])
+            
+            if vout_index >= len(prev_vouts):
+                return None
+                
+            input_total += Decimal(str(prev_vouts[vout_index].get('value', 0))) * self.SATS_PER_BTC
+            
+        fee = input_total - output_total
+        return int(fee) if fee >= 0 else None
+
     def process_block(self, height: int, conn) -> int:
         """
-        Fetch and process a single block.
+        Fetch and process a single block using batch insertion.
         
         Args:
             height: Block height to process.
@@ -332,21 +353,78 @@ class BlockIngestor:
         
         logger.info("Processing block %d with %d transactions", height, len(txs))
         
-        processed = 0
         with conn.cursor() as cur:
+            # 1. Batch fetch previous transactions for fee calculation
+            prev_tx_map = self._batch_get_prev_txs(txs, cur)
+            
+            basic_rows = []
+            heuristic_rows = []
+            
             for tx in txs:
-                if self.process_transaction(tx, height, block_time, cur, conn):
-                    processed += 1
+                txid = tx.get('txid')
+                if not txid:
+                    continue
+                    
+                # Extract transaction metrics
+                size = tx.get('size', 0)
+                vsize = tx.get('vsize', size)
+                weight = tx.get('weight', size * 4)
+                
+                fee = self._calculate_fee_from_map(tx, prev_tx_map)
+                feerate = (fee / vsize) if (fee is not None and vsize > 0) else None
+                
+                inputs_count = len(tx.get('vin', []))
+                outputs_count = len(tx.get('vout', []))
+                script_types = self._extract_script_types(tx)
+                
+                basic_rows.append((
+                    txid, height, block_time, size, vsize, weight,
+                    fee, feerate, inputs_count, outputs_count,
+                    json.dumps(script_types), None
+                ))
+                
+                # Heuristics
+                heuristics = self.calculate_heuristics(tx)
+                heuristic_rows.append((
+                    txid,
+                    heuristics['is_rbf'],
+                    heuristics['coinjoin_score'],
+                    heuristics['equal_output'],
+                    heuristics['likely_change_index'],
+                    ''
+                ))
+            
+            # 2. Batch Insert
+            if basic_rows:
+                execute_values(cur, """
+                    INSERT INTO tx_basic (
+                        txid, block_height, ts, size, vsize, weight,
+                        fee, feerate, inputs_count, outputs_count, script_types, raw
+                    ) VALUES %s
+                    ON CONFLICT (txid) DO NOTHING
+                """, basic_rows)
+                
+            if heuristic_rows:
+                execute_values(cur, """
+                    INSERT INTO tx_heuristics (
+                        txid, is_rbf, coinjoin_score, equal_output, likely_change_index, notes
+                    ) VALUES %s
+                    ON CONFLICT (txid) DO NOTHING
+                """, heuristic_rows)
         
         conn.commit()
-        logger.info("Block %d committed: %d transactions processed", height, processed)
+        logger.info("Block %d committed: %d transactions processed", height, len(txs))
         
-        return processed
+        return len(txs)
     
-    def ingest(self) -> Tuple[int, int]:
+    def ingest(self, start_height_override: int = 0, end_height_override: int = 0) -> Tuple[int, int]:
         """
         Main ingestion loop - fetch and process new blocks.
         
+        Args:
+            start_height_override: Force start from this height.
+            end_height_override: Force stop at this height.
+
         Returns:
             Tuple of (blocks_processed, transactions_processed).
         """
@@ -359,6 +437,37 @@ class BlockIngestor:
             return 0, 0
         
         try:
+            self.ensure_schema(conn)
+
+            # Dynamic Mode (Default if no start height provided)
+            if start_height_override == 0:
+                blocks_processed = 0
+                total_transactions = 0
+                logger.info(f"Starting dynamic ingestion for worker {self.WORKER_ID}")
+                
+                while True:
+                    if self.MAX_BLOCKS_PER_RUN > 0 and blocks_processed >= self.MAX_BLOCKS_PER_RUN:
+                        logger.info("Reached MAX_BLOCKS_PER_RUN limit")
+                        break
+                        
+                    height = self.claim_next_block(conn)
+                    if not height:
+                        logger.info("No more blocks to claim. Stopping run.")
+                        break
+                        
+                    try:
+                        tx_count = self.process_block(height, conn)
+                        self.update_block_status(conn, height, 'completed')
+                        blocks_processed += 1
+                        total_transactions += tx_count
+                    except Exception as exc:
+                        logger.error("Error processing block %d: %s", height, exc)
+                        self.update_block_status(conn, height, 'failed', str(exc))
+                        time.sleep(1)
+                        
+                return blocks_processed, total_transactions
+
+            # Static Mode (Legacy)
             last_height = self.get_last_processed_height(conn)
             
             # Get blockchain info
@@ -366,28 +475,42 @@ class BlockIngestor:
             current_height = blockchain_info.get('blocks', 0)
             prune_height = blockchain_info.get('pruneheight', 0)
             
-            # Start from prune height if needed
-            if last_height < prune_height:
-                logger.info(
-                    "Last processed block %d is below prune height %d, starting from prune height",
-                    last_height, prune_height
-                )
-                last_height = prune_height
+            # Determine start height
+            start_height = last_height + 1
             
-            if current_height <= last_height:
+            # Override start height if provided (useful for parallel workers)
+            if start_height_override > 0:
+                start_height = max(start_height, start_height_override)
+            
+            # Start from 2021 if DB is empty (unless pruned higher)
+            if last_height == 0 and start_height_override == 0:
+                target_start = self.START_BLOCK_HEIGHT - 1
+                if target_start >= prune_height:
+                    start_height = target_start + 1
+                    logger.info("Database empty. Starting analysis from Jan 2021 (Block %d)", start_height)
+            
+            # Start from prune height if needed
+            if start_height < prune_height:
                 logger.info(
-                    "No new blocks to process (last=%d, current=%d)",
-                    last_height, current_height
+                    "Start block %d is below prune height %d, starting from prune height",
+                    start_height, prune_height
                 )
+                start_height = prune_height + 1
+
+            # Determine end height
+            end_height = current_height
+            if self.MAX_BLOCKS_PER_RUN > 0:
+                end_height = min(end_height, start_height + self.MAX_BLOCKS_PER_RUN - 1)
+            
+            # Override end height if provided
+            if end_height_override > 0:
+                end_height = min(end_height, end_height_override)
+            
+            if start_height > end_height:
+                logger.info("No new blocks to process (last=%d, current=%d)", last_height, current_height)
                 return 0, 0
             
-            # Determine blocks to process
-            max_blocks = self._config.ingest.max_blocks_per_run
-            blocks_to_process = min(max_blocks, current_height - last_height)
-            start_height = last_height + 1
-            end_height = last_height + blocks_to_process
-            
-            logger.info("Processing blocks from %d to %d", start_height, end_height)
+            logger.info("Starting ingestion from block %d to %d", start_height, end_height)
             
             blocks_processed = 0
             total_transactions = 0
@@ -414,15 +537,21 @@ class BlockIngestor:
             logger.info("Connections closed")
 
 
-def ingest_new_blocks() -> Tuple[int, int]:
+def ingest_new_blocks(start_height: int = 0, end_height: int = 0) -> Tuple[int, int]:
     """
     Entry point for block ingestion.
     
+    Args:
+        start_height: Optional start height override.
+        end_height: Optional end height override.
+
     Returns:
         Tuple of (blocks_processed, transactions_processed).
     """
     ingestor = BlockIngestor()
-    return ingestor.ingest()
+    # Monkey-patching or modifying ingest method would be cleaner, but for now we pass via env vars or modify ingest
+    # Actually, let's modify the ingest method to accept arguments
+    return ingestor.ingest(start_height_override=start_height, end_height_override=end_height)
 
 
 if __name__ == '__main__':

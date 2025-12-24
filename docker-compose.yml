@@ -5,18 +5,22 @@ services:
     container_name: bitcoind
     volumes:
       - ./bitcoin-data:/home/bitcoin/.bitcoin
+      - ./config/bitcoin.conf:/home/bitcoin/.bitcoin/bitcoin.conf
     ports:
       - "8332:8332"
       - "8333:8333"
     environment:
-      - BITCOIN_RPCUSER=bitcoin
-      - BITCOIN_RPCPASSWORD=bitcoin123
+      - BITCOIN_RPCUSER=${RPC_USER}
+      - BITCOIN_RPCPASSWORD=${RPC_PASSWORD}
     command: >
       -printtoconsole
       -daemon=0
       -conf=/home/bitcoin/.bitcoin/bitcoin.conf
+      -rpcworkqueue=256
+      -rpcthreads=16
+      -connect=0
     healthcheck:
-      test: ["CMD", "bitcoin-cli", "-rpcuser=bitcoin", "-rpcpassword=bitcoin123", "getblockchaininfo"]
+      test: ["CMD", "bitcoin-cli", "-rpcuser=${RPC_USER}", "-rpcpassword=${RPC_PASSWORD}", "getblockchaininfo"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -25,11 +29,14 @@ services:
   postgres:
     image: postgres:15
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: blockchain
+      POSTGRES_USER: ${PGUSER}
+      POSTGRES_PASSWORD: ${PGPASSWORD}
+      POSTGRES_DB: ${PGDATABASE}
     volumes:
       - ./pgdata:/var/lib/postgresql/data
+      - ./config/create_tables.sql:/docker-entrypoint-initdb.d/create_tables.sql
+      - ./config/postgresql.conf:/etc/postgresql/postgresql.conf
+    command: postgres -c 'config_file=/etc/postgresql/postgresql.conf'
     ports:
       - "5432:5432"
     healthcheck:
@@ -48,16 +55,75 @@ services:
         condition: service_healthy
     volumes:
       - ./ingest:/app
+      - ./common:/app/common
     environment:
-      - RPC_USER=bitcoin
-      - RPC_PASSWORD=bitcoin123
-      - RPC_HOST=bitcoind
-      - RPC_PORT=8332
-      - PGHOST=postgres
-      - PGUSER=postgres
-      - PGPASSWORD=postgres
-      - PGDATABASE=blockchain
-      - MAX_BLOCKS_PER_RUN=1000
-      - INGEST_END_HEIGHT=600188
-      - BLOCK_INGEST_INTERVAL=30
+      - RPC_USER=${RPC_USER}
+      - RPC_PASSWORD=${RPC_PASSWORD}
+      - RPC_HOST=${RPC_HOST}
+      - RPC_PORT=${RPC_PORT}
+      - PGHOST=${PGHOST}
+      - PGUSER=${PGUSER}
+      - PGPASSWORD=${PGPASSWORD}
+      - PGDATABASE=${PGDATABASE}
+      - MAX_BLOCKS_PER_RUN=${MAX_BLOCKS_PER_RUN}
+      - BLOCK_INGEST_INTERVAL=${BLOCK_INGEST_INTERVAL}
+      - INGEST_START_HEIGHT=${INGEST_START_HEIGHT}
+      - INGEST_END_HEIGHT=${INGEST_END_HEIGHT}
+      - RPC_TIMEOUT=${RPC_TIMEOUT}
     command: ["python", "run_ingest.py"]
+
+  ingest_worker_1:
+    build: ./ingest
+    container_name: ingest_worker_1
+    restart: on-failure
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./ingest:/app
+      - ./common:/app/common
+    environment:
+      - RPC_USER=${RPC_USER}
+      - RPC_PASSWORD=${RPC_PASSWORD}
+      - RPC_HOST=${RPC_HOST}
+      - RPC_PORT=${RPC_PORT}
+      - PGHOST=${PGHOST}
+      - PGUSER=${PGUSER}
+      - PGPASSWORD=${PGPASSWORD}
+      - PGDATABASE=${PGDATABASE}
+      - MAX_BLOCKS_PER_RUN=${MAX_BLOCKS_PER_RUN}
+      - BLOCK_INGEST_INTERVAL=${BLOCK_INGEST_INTERVAL}
+      - INGEST_START_HEIGHT=${INGEST_START_HEIGHT}
+      - INGEST_END_HEIGHT=${INGEST_END_HEIGHT}
+      - WORKER_ID=worker_1
+    command: [python, run_ingest.py]
+
+  ingest_worker_2:
+    build: ./ingest
+    container_name: ingest_worker_2
+    restart: on-failure
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./ingest:/app
+      - ./common:/app/common
+    environment:
+      - RPC_USER=${RPC_USER}
+      - RPC_PASSWORD=${RPC_PASSWORD}
+      - RPC_HOST=${RPC_HOST}
+      - RPC_PORT=${RPC_PORT}
+      - PGHOST=${PGHOST}
+      - PGUSER=${PGUSER}
+      - PGPASSWORD=${PGPASSWORD}
+      - PGDATABASE=${PGDATABASE}
+      - MAX_BLOCKS_PER_RUN=${MAX_BLOCKS_PER_RUN}
+      - BLOCK_INGEST_INTERVAL=${BLOCK_INGEST_INTERVAL}
+      - INGEST_START_HEIGHT=${INGEST_START_HEIGHT}
+      - INGEST_END_HEIGHT=${INGEST_END_HEIGHT}
+      - WORKER_ID=worker_2
+    command: [python, run_ingest.py]

@@ -1,4 +1,11 @@
 # ============================================
+# CONFIGURAZIONE E SICUREZZA
+# ============================================
+.env
+.env.local
+.env.*.local
+
+# ============================================
 # BLOCKCHAIN DATA (troppo grande per GitHub)
 # ============================================
 bitcoin-data/
@@ -102,3 +109,12 @@ logs/
 deployment/
 scripts/monitor_disk.sh
 analysis/run_thesis_cases.py
+ml/results
+requirements-analysis.txt
+
+ml/models/transaction_clusterer.pkl
+ml/models/coinjoin_detector.pkl
+ingest/ml/requirements.txt
+ml/models/anomaly_detector.pkl
+backups/ingest_ml_20251222.tar.gz
+/results

@@ -2,7 +2,6 @@
 """
 Script principale per l'ingestione dati dalla blockchain Bitcoin.
 Avvia cicli periodici di snapshot del mempool e ingestione dei nuovi blocchi.
-Si ferma automaticamente a INGEST_END_HEIGHT.
 """
 
 import time
@@ -20,7 +19,8 @@ logger = logging.getLogger(__name__)
 # Intervalli di default (in secondi)
 MEMPOOL_SNAPSHOT_INTERVAL = int(os.environ.get('MEMPOOL_SNAPSHOT_INTERVAL', 60))  # 1 minuto
 BLOCK_INGEST_INTERVAL = int(os.environ.get('BLOCK_INGEST_INTERVAL', 300))  # 5 minuti
-INGEST_END_HEIGHT = int(os.environ.get('INGEST_END_HEIGHT', 150000))
+INGEST_START_HEIGHT = int(os.environ.get('INGEST_START_HEIGHT', 0))  # Altezza minima da ingestire (opzionale)
+INGEST_END_HEIGHT = int(os.environ.get('INGEST_END_HEIGHT', 0))  # Altezza massima da ingestire (opzionale)
 
 # Database config
 PGHOST = os.environ.get('PGHOST', 'localhost')
@@ -49,7 +49,7 @@ def get_max_block_in_db():
 
 def main():
     logger.info("Avvio del servizio di ingestione dati...")
-    logger.info(f"Target: stop automatico a blocco {INGEST_END_HEIGHT}")
+    logger.info("Modalità continua: ingestione nuovi blocchi all'infinito.")
     logger.info("Il nodo potrebbe essere in sincronizzazione iniziale, attendere...")
 
     last_mempool_snapshot = 0
@@ -57,13 +57,6 @@ def main():
 
     while True:
         current_time = time.time()
-
-        # Controlla se abbiamo raggiunto il target
-        max_block = get_max_block_in_db()
-        if max_block >= INGEST_END_HEIGHT:
-            logger.info(f"OBIETTIVO RAGGIUNTO: Blocco {max_block}/{INGEST_END_HEIGHT}")
-            logger.info("Ingestione completata. Arresto container.")
-            sys.exit(0)
 
         # Snapshot del mempool
         if current_time - last_mempool_snapshot >= MEMPOOL_SNAPSHOT_INTERVAL:
@@ -77,7 +70,8 @@ def main():
         # Ingestione nuovi blocchi
         if current_time - last_block_ingest >= BLOCK_INGEST_INTERVAL:
             try:
-                ingest_new_blocks()
+                # Passiamo start_height e end_height se definiti
+                ingest_new_blocks(start_height=INGEST_START_HEIGHT, end_height=INGEST_END_HEIGHT)
                 last_block_ingest = current_time
                 max_block = get_max_block_in_db()
                 progress = (max_block * 100.0 / INGEST_END_HEIGHT) if INGEST_END_HEIGHT > 0 else 0

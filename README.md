@@ -21,6 +21,30 @@ This project implements a **proof-of-concept** blockchain analysis system that:
 - **Monitors mempool** for real-time network analysis
 - **Provides forensic analysis** capabilities (address clustering, taint analysis)
 
+## Management & Deployment
+
+The project includes a unified management script `manage.ps1` to simplify operations.
+
+### Usage
+
+```powershell
+# 1. Setup local environment (create folders, .env)
+.\manage.ps1 Setup
+
+# 2. Deploy code to server (via SCP)
+.\manage.ps1 Deploy
+
+# 3. Check server status
+.\manage.ps1 Status
+
+# 4. View worker logs (default: ingest_worker_1)
+.\manage.ps1 Logs
+.\manage.ps1 Logs -Worker ingest_worker_8
+
+# 5. Connect via SSH
+.\manage.ps1 Ssh
+```
+
 ## Architecture
 
 ```

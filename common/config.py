@@ -42,7 +42,7 @@ class RPCConfig:
     password: str = field(default_factory=lambda: os.environ.get('RPC_PASSWORD', 'yourrpcpassword'))
     host: str = field(default_factory=lambda: os.environ.get('RPC_HOST', 'localhost'))
     port: int = field(default_factory=lambda: int(os.environ.get('RPC_PORT', '8332')))
-    timeout: int = field(default_factory=lambda: int(os.environ.get('RPC_TIMEOUT', '30')))
+    timeout: int = field(default_factory=lambda: int(os.environ.get('RPC_TIMEOUT', '120')))
     max_retries: int = field(default_factory=lambda: int(os.environ.get('RPC_MAX_RETRIES', '3')))
     retry_delay: int = field(default_factory=lambda: int(os.environ.get('RPC_RETRY_DELAY', '5')))
     
