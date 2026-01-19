@@ -98,7 +98,7 @@ services:
       - INGEST_START_HEIGHT=${INGEST_START_HEIGHT}
       - INGEST_END_HEIGHT=${INGEST_END_HEIGHT}
       - WORKER_ID=worker_1
-    command: [python, run_ingest.py]
+    command: ["python", "run_ingest.py"]
 
   ingest_worker_2:
     build: ./ingest
@@ -126,4 +126,4 @@ services:
       - INGEST_START_HEIGHT=${INGEST_START_HEIGHT}
       - INGEST_END_HEIGHT=${INGEST_END_HEIGHT}
       - WORKER_ID=worker_2
-    command: [python, run_ingest.py]
+    command: ["python", "run_ingest.py"]

@@ -21,30 +21,6 @@ This project implements a **proof-of-concept** blockchain analysis system that:
 - **Monitors mempool** for real-time network analysis
 - **Provides forensic analysis** capabilities (address clustering, taint analysis)
 
-## Management & Deployment
-
-The project includes a unified management script `manage.ps1` to simplify operations.
-
-### Usage
-
-```powershell
-# 1. Setup local environment (create folders, .env)
-.\manage.ps1 Setup
-
-# 2. Deploy code to server (via SCP)
-.\manage.ps1 Deploy
-
-# 3. Check server status
-.\manage.ps1 Status
-
-# 4. View worker logs (default: ingest_worker_1)
-.\manage.ps1 Logs
-.\manage.ps1 Logs -Worker ingest_worker_8
-
-# 5. Connect via SSH
-.\manage.ps1 Ssh
-```
-
 ## Architecture
 
 ```
@@ -65,21 +41,6 @@ The system uses **Bitcoin Core in pruned mode** to minimize disk usage while mai
   - Balanced storage (140GB vs ~600GB for full archival node)
   - Sufficient for multi-year historical analysis
 - **Trade-off**: Cannot query arbitrary historical blocks older than retention window
-
-### Auto-Stop Ingest Mechanism
-
-The ingest service features **automatic completion** when reaching data collection targets:
-
-- **Target height**: Configurable via `INGEST_END_HEIGHT` environment variable (default: 600,188 blocks)
-- **Auto-stop**: Service monitors database progress and gracefully exits when target is reached
-- **Progress tracking**: Real-time logging with percentage completion
-- **Example log output**:
-  ```
-  📊 Progresso: 450000/600188 (74.98%)
-  🎯 OBIETTIVO RAGGIUNTO! Blocco 600188/600188
-  ✅ Ingestione completata. Container si arresta.
-  ```
-- **Use case**: Collect specific historical datasets (e.g., May 2017 - October 2019) without manual intervention
 
 ## Quick Start
 
@@ -110,37 +71,25 @@ Bitcoin Core needs to sync with the network (can take hours/days depending on yo
 docker-compose logs -f bitcoind
 ```
 
-### 3. Access the Database
+### 3. Run Sampling Campaign
 
-Connect to PostgreSQL to query collected data:
+To start the historical data collection (2011-2023):
 
 ```bash
-docker exec -it postgres psql -U postgres -d blockchain
-```
-
-Example queries:
-
-```sql
--- Count transactions
-SELECT COUNT(*) FROM tx_basic;
-
--- Check RBF transactions
-SELECT COUNT(*) FROM tx_heuristics WHERE is_rbf = true;
-
--- CoinJoin candidates
-SELECT * FROM tx_heuristics WHERE coinjoin_score > 0.7;
+python3 ingest/ops/run_sampling_campaign.py
 ```
 
 ### 4. Run Analysis
 
-Activate Python environment and run Jupyter notebooks:
+Activate Python environment and run the analysis scripts:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements-analysis.txt
 
-jupyter notebook analysis/analysis.ipynb
+# Generate comparison charts
+python3 analysis/scripts/compare_eras.py
 ```
 
 ## Database Schema
@@ -231,21 +180,7 @@ Default credentials (change for production):
 
 **Security Note**: These are development defaults. For production deployments, use strong passwords and restrict network access (bind PostgreSQL to 127.0.0.1 only).
 
-## Performance
 
-- **Query Latency**: <10ms (99th percentile)
-- **Throughput**: ~1,400 blocks/hour during ingest, processing ~2,500 transactions/minute
-- **Resource Usage**: 
-  - CPU: ~150% bitcoind (verification), ~35% python ingest, ~40-80% postgres (under load)
-  - RAM: ~1.6GB (bitcoind), ~150MB (postgres), ~80MB (ingest)
-- **Storage**: 
-  - Bitcoin data: ~140GB (pruned mode with 140GB retention)
-  - Database: ~800MB per 2M transactions (without raw JSONB)
-  - Total recommended: 160GB disk minimum
-- **Sync Time**: 
-  - Full sync to block 657k: ~24 hours (depends on network speed)
-  - Ingest rate: ~1,400 blocks/hour (1000 blocks per 30s cycle)
-  - Complete ingest (552k-600k): ~33 hours for 47k blocks
 
 ## Use Cases
 
@@ -285,13 +220,13 @@ When using pruned mode with `prune=140000`:
 
 **Strategy**: Configure `INGEST_END_HEIGHT` based on your pruned retention size and target dataset.
 
-**Disk Space Optimization**: If running low on disk space, you can disable the `raw` JSONB column in `block_ingest.py` (comment out the raw column insertion). This reduces database size by ~70% but disables fee calculation for new blocks. Fee data will still be available for blocks ingested before the optimization.
+**Disk Space Optimization**: If running low on disk space, you can disable the `raw` JSONB column in `ingest/tasks/block_ingest.py` (comment out the raw column insertion). This reduces database size by ~70% but disables fee calculation for new blocks. Fee data will still be available for blocks ingested before the optimization.
 
 ## Extending the System
 
 ### Add New Heuristics
 
-Edit `ingest/block_ingest.py` and implement in `calculate_heuristics()`:
+Edit `ingest/tasks/block_ingest.py` and implement in `calculate_heuristics()`:
 
 ```python
 def calculate_heuristics(tx):

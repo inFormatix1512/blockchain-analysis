@@ -20,8 +20,10 @@ import sys
 import warnings
 from datetime import datetime
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(__file__).rsplit('\\', 2)[0].rsplit('/', 2)[0])
+# Add repo root to path for imports
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
 from analysis.src.data_loader import load_all_data
 from analysis.src.statistics import (
